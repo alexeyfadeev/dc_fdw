@@ -35,6 +35,7 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 #include "tsearch/ts_utils.h"
+#include "access/htup_details.h"
 
 #include "qual_extract.h"
 

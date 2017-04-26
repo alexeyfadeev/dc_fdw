@@ -1,3 +1,9 @@
 *.o
 *.so
 *.DS_Store
+jsquery_pg9.4-Release-x64/
+Debug/
+x64/
+dc_fdw_pg9.6-Debug-x64/
+.vs/
+dc_fdw.VC*

@@ -117,11 +117,6 @@ typedef struct DcFdwExecutionState
 /*
  * SQL functions
  */
-extern Datum dc_fdw_handler(PG_FUNCTION_ARGS);
-extern Datum dc_fdw_validator(PG_FUNCTION_ARGS);
-
-PG_FUNCTION_INFO_V1(dc_fdw_handler);
-PG_FUNCTION_INFO_V1(dc_fdw_validator);
 
 /*
  * FDW callback routines
@@ -177,7 +172,7 @@ void cstring_tuple(Datum **tuple_as_array, bool **nulls, int *mask, int mask_len
  * Foreign-data wrapper handler function: return a struct with pointers
  * to my callback routines.
  */
-Datum
+PGDLLEXPORT Datum
 dc_fdw_handler(PG_FUNCTION_ARGS)
 {
 	FdwRoutine *fdwroutine = makeNode(FdwRoutine);
@@ -198,6 +193,7 @@ dc_fdw_handler(PG_FUNCTION_ARGS)
 
 	PG_RETURN_POINTER(fdwroutine);
 }
+PG_FUNCTION_INFO_V1(dc_fdw_handler);
 
 /*
  * Validate the generic options given to a FOREIGN DATA WRAPPER, SERVER,
@@ -205,7 +201,7 @@ dc_fdw_handler(PG_FUNCTION_ARGS)
  *
  * Raise an ERROR if the option or its value is considered invalid.
  */
-Datum
+PGDLLEXPORT Datum
 dc_fdw_validator(PG_FUNCTION_ARGS)
 {
 	List        *options_list = untransformRelOptions(PG_GETARG_DATUM(0));
@@ -387,6 +383,7 @@ dc_fdw_validator(PG_FUNCTION_ARGS)
 	
 	PG_RETURN_VOID();
 }
+PG_FUNCTION_INFO_V1(dc_fdw_validator);
 
 /*
  * Check if the provided option is one of the valid options.
@@ -641,11 +638,13 @@ dcGetForeignPaths(PlannerInfo *root,
 	
 	/* Create a ForeignPath node and add it as only possible path */
 	path = create_foreignscan_path(root, baserel,
+									NULL,
 								    baserel->rows,
 									startup_cost,
 									total_cost,
 									NIL,		/* no pathkeys */
 									NULL,		/* no outer rel either */
+									NULL,
 									fdw_private);
 	add_path(baserel, (Path *) path);
 }
@@ -688,7 +687,10 @@ dcGetForeignPlan(PlannerInfo *root,
 							scan_clauses,
 							scan_relid,
 							NIL,	/* no expressions to evaluate */
-							fdw_private);
+							fdw_private,
+							NULL,
+							NULL,
+							NULL);
 }
 
 
