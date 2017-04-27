@@ -40,6 +40,7 @@
 #include "optimizer/var.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
+#include "executor/spi.h"
 
 
 #include "qual_pushdown.h"
@@ -112,6 +113,8 @@ typedef struct DcFdwExecutionState
     int             rlistptr;   /* for looping through the rList */
     int             *mask;      /* mask for column mapping */
     int             ncols;      /* number of columns in the table */   
+	char			*id_col;
+	char			*data_col;
 } DcFdwExecutionState;
 
 /*
@@ -146,6 +149,13 @@ static void dcEndForeignScan(ForeignScanState *node);
 static bool dcAnalyzeForeignTable(Relation relation, 
                                     AcquireSampleRowsFunc *func, 
                                     BlockNumber *totalpages);
+
+static void dcBeginForeignModify(ModifyTableState *mtstate, ResultRelInfo *rinfo, List *fdw_private, int subplan_index, int eflags);
+static TupleTableSlot * dcExecForeignInsert(EState *estate, ResultRelInfo *rinfo, TupleTableSlot *slot, TupleTableSlot *planSlot);
+static TupleTableSlot * dcExecForeignUpdate(EState *estate, ResultRelInfo *rinfo, TupleTableSlot *slot, TupleTableSlot *planSlot);
+static TupleTableSlot * dcExecForeignDelete(EState *estate, ResultRelInfo *rinfo, TupleTableSlot *slot, TupleTableSlot *planSlot);
+static void dcEndForeignModify(EState *estate, ResultRelInfo *rinfo);
+
 
 /*
  * Helper functions
@@ -195,6 +205,11 @@ dc_fdw_handler(PG_FUNCTION_ARGS)
 	fdwroutine->ReScanForeignScan = dcReScanForeignScan;
 	fdwroutine->EndForeignScan = dcEndForeignScan;
 	fdwroutine->AnalyzeForeignTable = dcAnalyzeForeignTable;
+	fdwroutine->BeginForeignModify = dcBeginForeignModify;
+	fdwroutine->ExecForeignInsert = dcExecForeignInsert;
+	fdwroutine->ExecForeignUpdate = dcExecForeignUpdate;
+	fdwroutine->ExecForeignDelete = dcExecForeignDelete;
+	fdwroutine->EndForeignModify = dcEndForeignModify;
 
 	PG_RETURN_POINTER(fdwroutine);
 }
@@ -806,7 +821,7 @@ dcIterateForeignScan(ForeignScanState *node)
         /*
          * load file content into buffer
          */
-        currFile = openDoc(sidDocPath.data);
+        currFile = openDoc(sidDocPath.data, O_RDONLY);
         loadDoc(&buf, currFile);
         closeDoc(currFile);
         
@@ -877,6 +892,155 @@ dcReScanForeignScan(ForeignScanState *node)
     if (festate->rlist == NIL)
 		return;
 
+}
+
+static void
+dcBeginForeignModify(ModifyTableState *mtstate,
+	ResultRelInfo *rinfo,
+	List *fdw_private,
+	int subplan_index,
+	int eflags)
+{
+	char	   *data_dir;
+	char       *index_dir;
+	DcFdwExecutionState *festate;
+	int         *mask;
+	List        *mappingList;
+	int         numOfColumns;
+	Relation    rel;
+
+	/* Fetch options of foreign table */
+	dcGetOptions(RelationGetRelid(rinfo->ri_RelationDesc),
+		&data_dir, &index_dir, &mappingList);
+	rel = heap_open(RelationGetRelid(rinfo->ri_RelationDesc), AccessShareLock);
+	numOfColumns = dc_col_mapping_mask(rel, mappingList, &mask);
+	heap_close(rel, NoLock);
+
+	/*
+	* Save state in node->fdw_state.  We must save enough information to call
+	* BeginCopyFrom() again.
+	*/
+	festate = (DcFdwExecutionState *)palloc(sizeof(DcFdwExecutionState));
+	/*festate->rlist = (List *)list_nth((List *)((ForeignScan *)node->ss.ps.plan)->fdw_private, 0);*/
+	/*festate->stats = (CollectionStats *)list_nth((List *)((ForeignScan *)node->ss.ps.plan)->fdw_private, 1);*/
+	festate->rlistptr = 0;
+	festate->data_dir = data_dir;
+	festate->dir_state = AllocateDir(data_dir);
+	festate->mask = mask;
+	festate->ncols = numOfColumns;
+	/* Store the additional state info */
+	festate->attinmeta = TupleDescGetAttInMetadata(rinfo->ri_RelationDesc->rd_att);
+	festate->id_col = (char*)(mappingList->head->data.ptr_value);
+	festate->data_col = (char*)(mappingList->head->next->data.ptr_value);
+
+	rinfo->ri_FdwState = festate;
+
+	elog(DEBUG1, "entering function %s", __func__);
+}
+
+
+static TupleTableSlot *
+dcExecForeignInsert(EState *estate,
+	ResultRelInfo *rinfo,
+	TupleTableSlot *slot,
+	TupleTableSlot *planSlot)
+{
+	DcFdwExecutionState *festate;
+
+	festate = (DcFdwExecutionState *)rinfo->ri_FdwState;
+
+	StringInfoData sidDocPath;
+	StringInfoData sidFName;
+	File currFile;
+	char *buf;
+	char* idChr;
+	int doc_id = 0;
+
+	HeapTuple		tuple;
+	TupleDesc		tupdesc;
+	int				nc;
+
+	Datum value1, value2;
+	bool isNull;
+	char *txt;
+	value1 = slot_getattr(slot, 1, &isNull);
+	value2 = slot_getattr(slot, 2, &isNull);
+	txt = DatumGetCString(value2);
+
+	tuple = slot->tts_tuple;
+	tupdesc = slot->tts_tupleDescriptor;
+	nc = tupdesc->natts;
+
+	/*
+	* Loop by columns
+	*/
+	for (int j = 0; j < nc; j++)
+	{
+		char	   *this_col_name;
+
+		/* ignore dropped attributes */
+		if (tupdesc->attrs[j]->attisdropped)
+			continue;
+
+		/* get column name */
+		this_col_name = SPI_fname(tupdesc, j + 1);
+
+		if (strcmp(this_col_name, festate->id_col) == 0)
+		{
+			idChr = SPI_getvalue(tuple, tupdesc, j + 1);
+		}
+		else if (strcmp(this_col_name, festate->data_col) == 0)
+		{
+			buf = SPI_getvalue(tuple, tupdesc, j + 1);
+		}
+	}
+
+	/* get full path/name of the file */
+	initStringInfo(&sidDocPath);
+	appendStringInfo(&sidDocPath, "%s/%s", festate->data_dir, idChr);
+
+	/*
+	* load file content into buffer
+	*/
+	currFile = openDoc(sidDocPath.data, O_CREAT | O_WRONLY | O_TRUNC);
+	saveDoc(buf, currFile);
+	closeDoc(currFile);
+
+	elog(DEBUG1, "entering function %s", __func__);
+
+	return slot;
+}
+
+
+static TupleTableSlot *
+dcExecForeignUpdate(EState *estate,
+	ResultRelInfo *rinfo,
+	TupleTableSlot *slot,
+	TupleTableSlot *planSlot)
+{
+	elog(DEBUG1, "entering function %s", __func__);
+
+	return slot;
+}
+
+
+static TupleTableSlot *
+dcExecForeignDelete(EState *estate,
+	ResultRelInfo *rinfo,
+	TupleTableSlot *slot,
+	TupleTableSlot *planSlot)
+{
+	elog(DEBUG1, "entering function %s", __func__);
+
+	return slot;
+}
+
+
+static void
+dcEndForeignModify(EState *estate,
+	ResultRelInfo *rinfo)
+{
+	elog(DEBUG1, "entering function %s", __func__);
 }
 
 /*
@@ -1104,7 +1268,7 @@ dc_acquire_sample_rows(Relation rel, int elevel,
         /*
          * load file content into buffer
          */
-        currFile = openDoc(sidDocPath.data);
+        currFile = openDoc(sidDocPath.data, O_RDONLY);
         loadDoc(&buf, currFile);
         closeDoc(currFile);
            

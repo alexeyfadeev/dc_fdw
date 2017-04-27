@@ -80,7 +80,7 @@ int spimIndex(char *datapath, char *indexpath, int buffer_size);
 File openStat (char *indexpath);
 File openDict (char *indexpath);
 File openPost (char *indexpath);
-File openDoc (char *fname);
+File openDoc (char *fname, int flags);
 
 void closeStat (File sfile);
 void closeDict (File dfile);
@@ -90,6 +90,7 @@ void closeDoc (File file);
 int loadDict(HTAB **dict, File dfile);
 int loadStat(CollectionStats **stats, File sfile);
 int loadDoc(char **buf, File file);
+int saveDoc(char *buf, File file);
 
 List * evalQualTree(PushableQualNode *node, HTAB *dict, File pfile, List *allList);
 List * searchTerm(char *term, HTAB *dict, File pfile, bool isALL, bool indexing);
