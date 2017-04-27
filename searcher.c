@@ -66,9 +66,9 @@ openPost (char *indexpath)
  * open a doc from collection
  */
 File
-openDoc (char *fname)
+openDoc (char *fname, int flags)
 {
-    return PathNameOpenFile(fname, O_RDONLY,  0666);
+    return PathNameOpenFile(fname, flags,  0666);
 }
 
 /*
@@ -223,6 +223,11 @@ loadDoc(char **buf, File file)
     return 0;
 }
 
+int saveDoc(char* buf, File file)
+{
+	FileWrite(file, buf, sizeof(buf));
+	return 0;
+}
 
 /*
  * skip list functions
