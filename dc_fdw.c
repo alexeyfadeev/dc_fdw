@@ -41,7 +41,7 @@
 #include "utils/memutils.h"
 #include "utils/rel.h"
 #include "executor/spi.h"
-
+#include "server/fmgr.h"
 
 #include "qual_pushdown.h"
 #include "qual_extract.h"
@@ -954,6 +954,7 @@ dcExecForeignInsert(EState *estate,
 	File currFile;
 	char *buf;
 	char* idChr;
+	bytea* byteaVal;
 	int doc_id = 0;
 
 	HeapTuple		tuple;
@@ -962,6 +963,7 @@ dcExecForeignInsert(EState *estate,
 
 	Datum value1, value2;
 	bool isNull;
+	bool isBytea = false;
 	char *txt;
 	value1 = slot_getattr(slot, 1, &isNull);
 	value2 = slot_getattr(slot, 2, &isNull);
@@ -991,7 +993,18 @@ dcExecForeignInsert(EState *estate,
 		}
 		else if (strcmp(this_col_name, festate->data_col) == 0)
 		{
-			buf = SPI_getvalue(tuple, tupdesc, j + 1);
+			Oid oid = SPI_gettypeid(tupdesc, j + 1);
+			isBytea = oid == 17;
+
+			if (isBytea)
+			{
+				Datum binVal = SPI_getbinval(tuple, tupdesc, j + 1, &isNull);
+				byteaVal = DatumGetByteaP(binVal);
+			}
+			else
+			{
+				buf = SPI_getvalue(tuple, tupdesc, j + 1);				
+			}
 		}
 	}
 
@@ -1003,7 +1016,18 @@ dcExecForeignInsert(EState *estate,
 	* load file content into buffer
 	*/
 	currFile = openDoc(sidDocPath.data, O_CREAT | O_WRONLY | O_TRUNC);
-	saveDoc(buf, currFile);
+	if(isBytea)
+	{
+		UINT* pLen = (UINT*)byteaVal->vl_len_;
+		long len = (*pLen) / 4 - 3;
+
+		saveDoc(byteaVal->vl_dat, currFile, len);
+	}
+	else
+	{
+		saveDoc(buf, currFile, sizeof(buf));
+		pfree(buf);
+	}
 	closeDoc(currFile);
 
 	elog(DEBUG1, "entering function %s", __func__);

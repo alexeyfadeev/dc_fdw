@@ -223,9 +223,15 @@ loadDoc(char **buf, File file)
     return 0;
 }
 
-int saveDoc(char* buf, File file)
+int saveDoc(char* buf, File file, UINT len)
 {
-	FileWrite(file, buf, sizeof(buf));
+	UINT blockSize = 1024 * 1024 * 32;
+
+	for (long l = 0; l < len; l += blockSize)
+	{
+		int curLen = min(len - l, blockSize);
+		FileWrite(file, buf, curLen);
+	}
 	return 0;
 }
 
